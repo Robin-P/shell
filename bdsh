@@ -1,0 +1,695 @@
+#!/bin/bash
+
+#JSON=1 #false
+FILE="";
+JSON=1
+
+#INCLUDE
+# Variables for parser
+INDEX=1 #ACTUAL POSITION IN STRING | YOU CAN RESET IT
+PART="" #IT IS A PART OF THE STRING, GENERATE WITH THE PARSER
+LABEL="" #COLUMN NAME
+VALUE="" #VALUE ASSOCIAT WITH COLUMN NAME
+ERROR="" #COULD BE FILL AFTER SEPARATE AND PARSER FUNCTION
+# Variables for return
+SUCCESS=0
+FAILURE=1
+
+####### PARSER
+# parser $argument
+# result will be stored in $PART
+### separate : for line with an equal
+# can be used to separate data in $argument ($PART for example)
+# result will be stored in $LABEL and $VALUE
+### getValue : for line with a double quote en double point
+# can be used to separate data in $argument ($PART for example)
+# result will be stored in $LABEL and $VALUE
+
+function separate {
+    if [ "$PART" == "" ]; then
+	ERROR="Error: This part is empty !\n"
+    fi
+    LABEL=${PART%=*}
+    VALUE=${PART#*=}
+    if [ "$LABEL" == "" ] || [ "$VALUE" == "" ]; then
+	ERROR="Error: Missing argument is the part, min two !\n"
+    fi
+}
+
+function getValue {
+    if [ "$1" == "" ]; then
+	ERROR="Error: This part is empty !\n"
+    else
+	TMP="$1"
+	LABEL=${TMP%:*}
+	VALUE=${TMP#*:}
+	LABEL=${LABEL#*\"}
+	LABEL=${LABEL%\"*}
+	VALUE=${VALUE#*\"}
+	VALUE=${VALUE%\"*}
+    fi
+}
+
+function check_table {
+    TABLE="desc_$1"
+    if [ "$1" ]; then
+	if [ "$(grep "$TABLE" "$FILE")" ]; then
+	    return "$SUCCESS";
+	fi
+    fi
+    return "$FAILURE";
+
+}
+
+function check_column {
+    TABLE="desc_$1"
+
+    if [ "$1" ] && [ "$2" ]; then
+	LINE=$(wc -l "$FILE"|cut -f1 -d ' ')
+	START=$(grep -n "$TABLE" "$FILE" |cut -f1 -d: )
+	let "LINE=LINE-START"
+	END=$(tail -n "$LINE" "$FILE" |grep -n ']'|head -n 1|cut -f1 -d: )
+	let "END=END+START"
+	SIZE=$(wc -l "$FILE"|cut -f1 -d ' ')
+	let "BUFFER_SIZE=SIZE-START+1"
+	let "WIDTH=END-START"
+	if tail -n "$BUFFER_SIZE" "$FILE"|head -n "$WIDTH"| grep -Fq "\"$2\""; then
+	    return "$SUCCESS";
+	else
+	    return "$FAILURE";
+	fi
+    fi
+    return "$FAILURE";
+}
+
+function parser {
+    if [ "$1" ]; then
+	LINE="$1"
+	size=${#LINE}
+	i="$INDEX"
+	j=0
+	while [ "$i" -lt "$size" ]  && [ "${LINE:$i:1}" != "," ]; do
+	    let "i=i+1"
+	    let "j=j+1"
+	done
+	PART="${LINE:$INDEX:$j}"
+	let "i=i+1"
+	INDEX=$i
+    fi
+    return 1;
+}
+
+function create {
+    INDEX=0
+    if [ "$1" ]; then
+	if [ "$1" == "database" ]; then
+	    if [ -e "$FILE" ]; then
+		printf "Database already exist when create database\n" 1>&2
+		return $FAILURE
+	    else
+		printf "{\n}\n" >> "$FILE"
+	    fi
+	elif [ "$1" == "table" ]; then
+	    if [ "$2" ] && [ "$3" ]; then
+		MDR="$3"
+		size=${#MDR}
+		SIZE=$(wc -l "$FILE" | cut -f1 -d ' ')
+		if [ "$SIZE" -eq 2 ] ; then
+		    START=2
+		    sed -i "$START i \ \t\"desc_$2\": [\n" "$FILE"
+		    while [ "$INDEX" -lt "$size" ]; do
+			let "TMP=TMP+1"
+			let "START=START+1"
+			parser "$MDR"
+			if [ "$INDEX" -le "$size" ]; then
+			    sed -i "$START i \ \t\t\"$PART\"," "$FILE"
+			else
+			    sed -i "$START i \ \t\t\"$PART\"\n\t]" "$FILE"
+			fi
+		    done
+		    let "START=SIZE+TMP+1"
+		    sed -i "$START i \ \t],\n\t\"data_$2\": [" "$FILE"
+		    let "START=START+3"
+		    sed -i "$START d" "$FILE"
+		else
+		    NEW="desc_$2"
+		    TRY=$(grep -n "$NEW" "$FILE" | head -n 1 | cut -f1 -d:)
+		    if [ "$TRY" != "" ]; then
+			printf "Table already exist when create table\n" 1>&2
+			return $FAILURE
+		    fi
+		    START=$(grep -n desc "$FILE" | tail -n 1 | cut -f1 -d:)
+		    let "LINE=SIZE-START+1"
+		    END=$(tail -n "$LINE" "$FILE" | grep -n "]" | head -n 1 | cut -f1 -d:)
+		    TMP=3
+		    let "START=START+END"
+		    sed -i "$START i \ \t\"desc_$2\": [" "$FILE"
+		    while [ "$INDEX" -lt "$size" ]; do
+			let "TMP=TMP+1"
+			let "START=START+1"
+			parser "$MDR"
+			if [ "$INDEX" -le "$size" ]; then
+			    sed -i "$START i \ \t\t\"$PART\"," "$FILE"
+			else
+			    sed -i "$START i \ \t\t\"$PART\"\n\t]," "$FILE"
+			fi
+		    done
+		    START=$(grep -n data "$FILE" | tail -n 1 | cut -f1 -d:)
+		    let "LINE=SIZE-START"
+		    END=$(tail -n "$LINE" "$FILE" | grep -n "]" | head -n 1 | cut -f1 -d:)
+		    let "START=SIZE+TMP-2"
+		    sed -i "$START i \ \t],\n\t\"data_$2\": [" "$FILE"
+		fi
+	    else
+		printf "Syntax error in command line (bad arguments, ...)\n" 1>&2
+		return "$FAILURE"
+	    fi
+	else
+	    printf "Syntax error in command line (bad arguments, ...)\n" 1>&2
+	    return "$FAILURE"
+	fi
+    else
+	printf "Syntax error in command line (bad arguments, ...)\n" 1>&2
+	return "$FAILURE"
+    fi
+    return $SUCCESS
+}
+
+function insert {
+    INDEX=0
+    res="$SUCCESS"
+    check_table "$1"
+    res="$?"
+    if [ "$res" == "$FAILURE" ]; then
+	printf "Table not found when insert\n" 1>&2
+	return "$FAILURE"
+    fi
+    line="$2"
+    size=${#line}
+    INDEX=0;
+    while [ "$INDEX" -lt "$size" ]; do
+	parser "$2"
+	separate "$PART"
+	check_column "$1" "$LABEL"
+	res="$?"
+	if [ "$res" == "$FAILURE" ]; then
+	    printf "Fields not found when insert\n" 1>&2
+	    return "$FAILURE"
+	fi
+    done
+
+    INDEX=0
+    MDR="$2"
+    size=${#MDR}
+    ASS="desc_$1"
+    LINE1=$(wc -l "$FILE" | cut -f1 -d ' ')
+    START1=$(grep -n "$ASS" "$FILE" | cut -f1 -d:)
+    let "LINE1=LINE1-START1"
+    END1=$(tail -n "$LINE1" "$FILE" | grep -n "]" | head -n 1 | cut -f1 -d:)
+    let "END1=END1+START1-1"
+    ASS1="data_$1"
+    LINE2=$(wc -l "$FILE" | cut -f1 -d ' ')
+    START2=$(grep -n "$ASS1" "$FILE" | cut -f1 -d:)
+    let "LINE2=LINE2-START2"
+    END2=$(tail -n "$LINE2" "$FILE" | grep -n "]" | head -n 1 | cut -f1 -d:)
+    let "END2=END2+START2"
+    #########
+    SIZE=$(wc -l "$FILE" | cut -f1 -d' ')
+    let "TAIL=END2-START2+1"
+    LAVIRGULE=$(head -n "$END2" "$FILE" | tail -n "$TAIL" | grep -n "}" | tail -n 1 | cut -f1 -d:)
+    if [ "$LAVIRGULE" != "" ]; then
+	let "LAVIRGULE=LAVIRGULE+START2-1"
+	sed -i "$LAVIRGULE d" "$FILE"
+	sed -i "$LAVIRGULE i \ \t\}," "$FILE"
+    fi
+    #########
+    sed -i "$END2 i \ \t\{" "$FILE"
+    let "END2=END2+1"
+    SIZE=$(wc -l "$FILE" | cut -f1 -d ' ')
+    let "TMPSTART1=START1"
+    let "TMPEND2=END2"
+    while [ "$START1" -lt "$END1" ]; do
+	let "NBR=SIZE-TMPSTART1-TMP"
+	WA=$(tail -n "$NBR" "$FILE" | head -n 1 | cut -f2 -d\")
+	if [ "$WA" != "" ]; then
+	    let "PTDR=START1+1"
+	    sed -i "$END2 i \ \t\t\"$WA\": \"\"," "$FILE"
+	    let "SIZE=SIZE+1"
+	    let "TMP=TMP+1"
+	    let "END2=END2+1"
+	fi
+	let "START1=START1+1"
+    done
+    sed -i "$END2 i \ \t\}" "$FILE"
+    let "SIZE=SIZE+1"
+    let "START2=START2+TMP"
+    let "END2=END2-TMP"
+    while [ "$TMP" -gt "0" ]; do
+	INDEX=0
+	MDR="$2"
+	size=${#MDR}
+	WA=$(head -n "$END2" "$FILE" | tail -n 1 | cut -f2 -d\")
+	while [ "$INDEX" -lt "$size" ]; do
+	    parser "$MDR"
+	    separate "$MDR"
+	    if [ "$WA" == "$LABEL" ]; then
+		sed -i "$END2 d" "$FILE"
+		sed -i "$END2 i \ \t\t\"$LABEL\": \"$VALUE\"," "$FILE"
+	    fi
+	done
+	let "START2=START2-1"
+	let "TMP=TMP-1"
+	let "END2=END2+1"
+    done
+    let "END2=END2-1"
+    WA=$(head -n "$END2" "$FILE" | tail -n 1 | cut -f1 -d,)
+    sed -i "$END2 d" "$FILE"
+    sed -i "$END2 i \ $WA" "$FILE"
+    return $SUCCESS
+}
+
+function check_all_table {
+    TMP="$1"
+    column=$SUCCESS
+    INDEX=0
+    size=${#TMP}
+    while [ "$INDEX" -lt "$size" ] && [ "$column" == "$SUCCESS" ]; do
+	parser "$TMP"
+	check_table "$PART"
+	column="$?"
+    done
+    return "$column"
+}
+
+declare -A ROW
+WIDTH=0
+
+function select_parser {
+    TABLE="data_$1"
+
+    NBLINE=$(wc -l "$FILE"|cut -f1 -d ' ')
+    START=$(grep -n "$TABLE" "$FILE" |cut -f1 -d: )
+    let "tmp_line=NBLINE-START"
+    LIMIT=$(tail -n "$tmp_line" "$FILE" |grep -n ']' |head -n 1 |cut -f1 -d: )
+    let "LIMIT=LIMIT+START"
+
+    while [ "$START" -lt "$LIMIT" ];do
+	let "ZONE=NBLINE-START"
+	END=$(tail -n "$ZONE" "$FILE"|grep -n '}' |head -n 1|cut -f1 -d: )
+	let "tmp=END"
+	let "END=END+START"
+	if [ "$END" -ge "$LIMIT" ]; then
+	    break
+	fi
+	for ARG in "${tab[@]}"; do
+	    TMP=$(tail -n "$ZONE" "$FILE"|head -n "$tmp"|grep "$ARG")
+	    if [ "$TMP" != "" ] ; then
+		getValue "$TMP"
+		if [ "${ROW[$POSITION]}" != "" ]; then
+		    ROW["$POSITION"]=${ROW[$POSITION]}"|"
+		fi
+		if [ "$VALUE" == "" ]; then
+		    VALUE=" "
+		fi
+		ROW["$POSITION"]=${ROW[$POSITION]}$VALUE
+		line=${ROW["$POSITION"]}
+		size=${#line}
+		if [ "$size" -gt "$WIDTH" ]; then
+		    WIDTH="$size"
+		fi
+		unset line
+		unset size
+		nb=${TABSIZE["$ARG"]}
+		if [ "$nb" == "" ]; then
+		    nb=0
+		fi
+		if [ ${#VALUE} -gt "$nb" ]; then
+		    TABSIZE["$ARG"]=${#VALUE}
+		fi
+		unset nb
+	    fi
+	done
+	let "POSITION=POSITION+1"
+	let "START=END+1"
+    done
+}
+
+function apply_order {
+    if [ "$1" ] && [ "$1" == "order" ]; then
+	IFS=$'\n' sorted=($(sort <<<  "${ROW[*]}"))
+	unset IFS
+	unset ROW
+	ROW=("${sorted[@]}")
+    fi
+}
+
+function display_select {
+    index=0
+    WIDTH=2
+    for size in "${TABSIZE[@]}"; do
+	let "WIDTH=WIDTH+size"
+    done
+    rollbar=0
+    for label in "${tab[@]}"; do
+	IFS='|' read -ra fields <<< "$HEADER"
+	my_line=${fields[$index]}
+	if [ "$rollbar" -eq 1 ]; then
+	    printf "  | %s" "$my_line"
+	    let "WIDTH=WIDTH+4"
+	else
+	    printf "%s" "$my_line"
+	fi
+	i=${#my_line}
+	j=${TABSIZE["$label"]}
+	while [ "$i" -lt "$j" ]; do
+	    printf " "
+	    let "i=i+1"
+	done
+	let "index=index+1"
+	rollbar=1
+    done
+    printf "\n"
+    i=0
+    while [ "$i" -lt "$WIDTH" ]; do
+	printf "-"
+	let "i=i+1"
+    done
+    printf "\n"
+    index=0
+    for ARG in "${ROW[@]}"; do
+	let "index=0"
+	rollbar=0
+	for label in "${tab[@]}"; do
+	    IFS='|' read -ra fields <<< "$ARG"
+	    my_line=${fields[$index]}
+    if [ "$rollbar" -eq 1 ]; then
+	printf "  | %s" "$my_line"
+    else
+	printf "%s" "$my_line"
+    fi
+    i=${#my_line}
+    while [ "$i" -lt "${TABSIZE["$label"]}" ]; do
+	printf " "
+	let "i=i+1"
+    done
+    let "index=index+1"
+    rollbar=1
+	done
+	printf "\n"
+    done
+}
+
+function json_select {
+    TABLE="data_$1"
+    sep=0
+
+    NBLINE=$(wc -l "$FILE"|cut -f1 -d ' ')
+    START=$(grep -n "$TABLE" "$FILE" |cut -f1 -d: )
+    if [ "$START" -eq "$START" ]; then
+	TMP=$(grep "$TABLE" "$FILE")
+	TMP=${TMP/'{'/''}
+	TMP=${TMP/'['/''}
+	printf "{\n%s[\n" "$TMP"
+    fi
+    let "tmp_line=NBLINE-START"
+    LIMIT=$(tail -n "$tmp_line" "$FILE" |grep -n ']' |head -n 1 |cut -f1 -d: )
+    let "LIMIT=LIMIT+START"
+
+    vir=0
+    while [ "$START" -lt "$LIMIT" ];do
+	let "ZONE=NBLINE-START"
+	END=$(tail -n "$ZONE" "$FILE"|grep -n '}' |head -n 1|cut -f1 -d: )
+	let "tmp=END"
+	let "END=END+START"
+	if [ "$END" -ge "$LIMIT" ]; then
+	    break
+	fi
+	sep=0
+	if [ "$vir" -eq 1 ]; then
+	    printf ",\n{\n"
+	else
+	    printf "{\n"
+	fi
+	for ARG in "${tab[@]}"; do
+	    TMP=$(tail -n "$ZONE" "$FILE"|head -n "$tmp"|grep "$ARG")
+	    if [ "$TMP" != "" ]; then
+		TMP=${TMP/','/''}
+		if [ "$sep" -eq 1 ]; then
+		    printf "%c\n%s\n" ',' "$TMP"
+		else
+    printf "%s" "$TMP"
+		fi
+		sep=1
+	    fi
+	done
+	printf "\n}"
+	vir=1
+	let "POSITION=POSITION+1"
+	let "START=END+1"
+    done
+    printf "\n]\n}\n"
+}
+
+function select {
+    POSITION=0
+    check_table "$1"
+    table="$?"
+    INDEX=0
+    column=$SUCCESS
+    declare -A TABSIZE
+    TMP="$2"
+    tab=()
+    i=0
+
+    if ! [ "$1" ]; then
+	printf "Syntax error in command line\n" 1>&2
+	return "$FAILURE"
+    elif ! [ "$2" ]; then
+	printf "Fields not found when select\n" 1>&2
+	return "$FAILURE"
+    fi
+    while [ "$INDEX" -lt ${#TMP} ] && [ "$column" == "$SUCCESS" ]; do
+	parser "$TMP"
+	check_column "$1" "$PART"
+	column="$?"
+	tab["$i"]="$PART"
+	let "i=i+1"
+    done
+    if [ "$table" == "$SUCCESS" ] && [ "$column" == "$SUCCESS" ]; then
+	i=0
+	for ARG in "${tab[@]}"; do
+
+	    if [ "${HEADER}" != "" ]; then
+		HEADER=${HEADER}"|"
+	    fi
+	    if [ "$ARG" == "" ]; then
+		HEADER=" "
+	    fi
+	    HEADER=${HEADER}$ARG
+	done
+	size=${#HEADER}
+	select_parser "$1"
+	apply_order "$3"
+	if [ "$JSON" -eq 1 ]; then
+	    display_select
+	else
+	    json_select "$1"
+	fi
+    elif [ "$column" == "$FAILURE" ]; then
+	printf "Fields not found when select\n" 1>&2
+	return "$FAILURE"
+    else
+	printf "Table not found when select\n" 1>&2
+	return "$FAILURE"
+    fi
+    return "$column"
+}
+
+function describe_display {
+    TMP="$1"
+    check_all_table "$TMP"
+    RESULT="$?"
+    INDEX=0
+    if [ "$1" ] && [ "$RESULT" != "$FAILURE" ]; then
+	while [ "$INDEX" -lt ${#TMP} ]; do
+	    parser "$TMP"
+	    TABLE="desc_$PART"
+	    LINE=$(wc -l "$FILE"|cut -f1 -d ' ')
+	    START=$(grep -n -m 1 "$TABLE" "$FILE" |cut -f1 -d: )
+	    let "LINE=LINE-START"
+	    END=$(tail -n "$LINE" "$FILE" |grep -n ']'|head -n 1|cut -f1 -d: )
+	    let "END=END+START"
+	    SIZE=$(wc -l "$FILE"|cut -f1 -d ' ')
+	    let "BUFFER_SIZE=SIZE-START"
+	    let "WIDTH=END-START-1"
+	    COUNT=0
+	    while [ "$COUNT" != "$WIDTH" ]; do
+		LOL=$(tail -n "$BUFFER_SIZE" "$FILE"|head -n 1 | cut -f2 -d\" | cut -f1 -d, ;)
+		if [ "$LOL" != "" ] ; then printf "%s\n" "$LOL"
+		fi
+		let "COUNT=COUNT+1"
+		let "BUFFER_SIZE=BUFFER_SIZE-1"
+	    done
+	done
+    else
+	printf "Table not found when describe\n" 1>&2
+	return "$FAILURE"
+    fi
+}
+
+function describe_json {
+    sep=0
+    LIMIT="$1"
+    check_all_table "$LIMIT"
+    RESULT="$?"
+    INDEX=0
+    if [ "$1" ] && [ "$RESULT" != "$FAILURE" ]; then
+	printf "{\n"
+	while [ "$INDEX" -lt ${#LIMIT} ]; do
+	    parser "$LIMIT"
+	    TABLE="desc_$PART"
+	    LINE=$(wc -l "$FILE"|cut -f1 -d ' ')
+	    START=$(grep -n "$TABLE" "$FILE" |cut -f1 -d: )
+	    if [ "$START" -eq "$START" ]; then
+		TMP=$(grep "$TABLE" "$FILE")
+		TMP=${TMP/'{'/''}
+		TMP=${TMP/'['/''}
+		if [ "$sep" -eq 1 ]; then
+		    printf ",\n%s[\n" "$TMP"
+		else
+		    printf "%s[\n" "$TMP"
+		fi
+	    fi
+	    let "LINE=LINE-START"
+	    END=$(tail -n "$LINE" "$FILE" |grep -n ']'|head -n 1|cut -f1 -d: )
+	    let "END=END+START"
+	    SIZE=$(wc -l "$FILE"|cut -f1 -d ' ')
+	    let "BUFFER_SIZE=SIZE-START"
+	    let "WIDTH=END-START-1"
+	    COUNT=0
+	    while [ "$COUNT" != "$WIDTH" ]; do
+		LOL=$(tail -n "$BUFFER_SIZE" "$FILE"|head -n 1)
+		if [ "$LOL" != "" ] ; then
+		    printf "%s\n" "$LOL"
+		fi
+		let "COUNT=COUNT+1"
+		let "BUFFER_SIZE=BUFFER_SIZE-1"
+	    done
+	    printf "]"
+	    sep=1
+	done
+	printf "\n}\n"
+    else
+	printf "Table not found when describe\n" 1>&2
+	return "$FAILURE"
+    fi
+}
+
+function describe {
+    res="$SUCCESS"
+    if [ "$JSON" -eq 0 ]; then
+	describe_json "$@"
+	res="$?"
+    else
+	describe_display "$@"
+	res="$?"
+    fi
+    return "$res"
+}
+###########################################
+
+function open {
+    if [ $# -gt 1 ]; then
+	LAST=""
+	for ARG in "$@" ; do
+	    if [ "$LAST" == "-f" ] && [ -f "$ARG" ]; then
+		FILE=$ARG
+	    elif [[ "$LAST" == "-f" && "$3" == "create" && "$4" == "database" ]]; then
+		FILE="$ARG"
+		return "$SUCCESS"
+	    elif [ "$LAST" == "-f" ]; then
+		printf "Error: File not found !\n" 1>&2
+		return "$FAILURE"
+	    fi
+	    LAST=$ARG
+	done
+    else
+	printf "Syntax error in command line\n" 1>&2
+	return "$FAILURE"
+    fi
+    if [ "$FILE" == "" ] && [ -f "${BDSH_FILE}" ]; then
+	FILE="${BDSH_FILE}"
+    elif [ "$FILE" == "" ] && [ -f ".bdshrc" ]; then
+	FILE=".bdshrc"
+    fi
+}
+
+function Help_err {
+    printf "%s\n" "Usage: $0 [OPTION]... [COMMAND] [REQUEST]" 1>&2
+    printf "%s\n" "OPTION:
+  -h			display usage
+  -f FILE		json database file
+  -j		json formated output for select command" 1>&2
+}
+
+function Help {
+    printf "%s\n" "Usage: $0 [OPTION]... [COMMAND] [REQUEST]"
+    printf "%s\n" "OPTION:
+  -h			display usage
+  -f FILE		json database file
+  -j		json formated output for select command"
+}
+
+function display_error {
+    while [ $# != 0 ]; do
+	{
+	    case "$1" in
+		"-h") Help
+		      return $SUCCESS;;
+		"-f") open "$@"
+		      if [ "$?" == "$FAILURE" ]; then
+			  return "$FAILURE"
+		      fi
+		      ;;
+		"-j") JSON=0
+		      ;;
+	    esac
+	    shift
+	}
+    done
+    return $SUCCESS
+}
+
+function sql {
+    res="$SUCCESS"
+    for ARG in "$@"; do
+	shift
+	if [ "$ARG" == "create" ] ||
+	       [ "$ARG" == "insert" ] ||
+	       [ "$ARG" == "describe" ] ||
+	       [ "$ARG" == "select" ]; then
+	    "$ARG" "$@" #Call fonction
+	    res="$?"
+	    break
+	fi
+    done
+    return "$res"
+}
+
+function main {
+    res=$SUCCESS
+    if [ $# == 0 ]; then
+	Help_err
+	return $FAILURE
+    fi
+    display_error "$@"
+    res="$?"
+    if [ "$res" == "$FAILURE" ]; then
+	return "$FAILURE"
+    fi
+    sql "$@"
+    return "$?"
+}
+
+main "$@"
+exit "$res"
